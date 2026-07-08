@@ -1,0 +1,28 @@
+[project]
+name = "local-rag-agent"
+version = "0.1.0"
+description = "完全本地运行的 RAG 知识库 AI Agent，支持自然语言与本地文档对话"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pymupdf>=1.28.0",
+    "chromadb>=1.5.0",
+    "ollama>=0.4.0",
+    "python-docx>=1.1.0",
+    "streamlit>=1.59.0",
+]
+
+[project.scripts]
+rag = "local_rag.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["local_rag*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: 需要外部服务（Ollama 等）的集成测试",
+]
+
+[build-system]
+requires = ["setuptools>=75.8", "wheel"]
+build-backend = "setuptools.build_meta"

@@ -1,0 +1,2 @@
+[console_scripts]
+rag = local_rag.cli:main
