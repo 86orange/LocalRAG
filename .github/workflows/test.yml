@@ -23,11 +23,13 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install project
-        run: uv pip install -e . --system
+        run: |
+          uv venv
+          .venv/bin/pip install -e .
 
       - name: Run tests
         run: |
-          python -m pytest tests/ \
+          .venv/bin/python -m pytest tests/ \
             -v \
             --tb=short \
             --ignore=tests/test_vector_store.py \
