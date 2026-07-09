@@ -2,10 +2,11 @@
 文件操作工具模块
 
 提供文档目录扫描、文件哈希计算、格式校验等功能，
-供 loader 模块调用，实现增量索引和文件筛选。
+以及文档元数据提取，供 loader / chunker 模块调用。
 """
 
 import hashlib
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -130,3 +131,41 @@ def get_file_type(file_path: Path) -> str:
 def _is_supported(suffix: str) -> bool:
     """判断后缀是否在支持列表中（内部使用）。"""
     return suffix.lower() in SUPPORTED_SUFFIXES
+
+
+def get_file_metadata(
+    file_path: Path,
+    business_line: str = "",
+    status: str = "active",
+) -> dict:
+    """提取文档的基础元数据，用于向量库 metadata。
+
+    返回字段：
+    - doc_id:      文件内容 MD5 哈希，作为稳定唯一标识
+    - source:      文件完整路径
+    - file_name:   文件名
+    - file_type:   文件类型 (md/txt/pdf/docx)
+    - file_size:   文件大小（字节）
+    - updated_at:  文件最后修改时间（ISO 8601）
+    - status:      生效状态，默认 "active"
+    - business_line: 所属业务线，默认空字符串
+
+    Args:
+        file_path: 文件路径
+        business_line: 业务线标签
+        status: 生效状态
+
+    Returns:
+        metadata 字典
+    """
+    stat = file_path.stat()
+    return {
+        "doc_id": compute_file_hash(file_path),
+        "source": str(file_path.resolve()),
+        "file_name": file_path.name,
+        "file_type": get_file_type(file_path),
+        "file_size": stat.st_size,
+        "updated_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+        "status": status,
+        "business_line": business_line,
+    }

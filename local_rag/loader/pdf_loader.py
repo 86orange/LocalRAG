@@ -13,6 +13,7 @@ from pathlib import Path
 import fitz  # PyMuPDF
 
 from local_rag.utils.logger import get_logger
+from local_rag.cleaner import clean
 
 logger = get_logger(__name__)
 
@@ -75,8 +76,175 @@ def load_pdf(file_path: str | Path) -> str:
     merged = _merge_split_tables(cleaned_pages)
 
     result = "\n\n".join(merged)
+    result = clean(result)
     logger.info("PDF 加载完成: %s (%d 页, %d 字符)", file_path.name, len(cleaned_pages), len(result))
     return result
+
+
+# ---- 带页码信息的加载（供 metadata 管线使用） ----
+
+
+def load_pdf_page_by_page(file_path: str | Path) -> list[tuple[int, str]]:
+    """逐页加载 PDF，返回 (页码, 页面文本) 列表。
+
+    与 load_pdf 使用相同的清洗逻辑（页眉页脚移除、跨页表格合并），
+    但保留页面边界信息，供切片后标注页码 metadata。
+
+    Args:
+        file_path: PDF 文件路径
+
+    Returns:
+        [(page_number, page_text), ...] 列表，页码从 1 开始
+    """
+    file_path = Path(file_path)
+
+    if not file_path.exists():
+        logger.error("PDF 文件不存在: %s", file_path)
+        return []
+
+    doc = fitz.open(str(file_path))
+    pages_text: list[str] = []
+
+    for page_num, page in enumerate(doc):
+        text = _extract_page_text(page)
+        if text.strip():
+            pages_text.append(text)
+        else:
+            ocr_text = _ocr_page(page)
+            pages_text.append(ocr_text)
+
+    if not pages_text:
+        doc.close()
+        return []
+
+    header_lines, footer_lines = _detect_headers_footers(doc, pages_text)
+
+    doc.close()
+
+    cleaned: list[str] = []
+    for page_num, text in enumerate(pages_text):
+        c = _clean_page(text, page_num, header_lines, footer_lines)
+        cleaned.append(c.strip())
+
+    merged_text = _merge_split_tables(cleaned)
+
+    return [(i + 1, t) for i, t in enumerate(merged_text) if t.strip()]
+
+
+def compute_page_offsets(pages: list[tuple[int, str]]) -> list[dict]:
+    """计算页面在全文中对应的字符偏移区间。
+
+    用于在切片后确定每个 chunk 属于哪些页。
+
+    Args:
+        pages: load_pdf_page_by_page 的返回结果 [(page_num, text), ...]
+
+    Returns:
+        [{"page": int, "start": int, "end": int}, ...]
+        其中 start/end 是全文拼接后的字符索引
+    """
+    offsets: list[dict] = []
+    cursor = 0
+    sep = "\n\n"
+    for page_num, text in pages:
+        offset = cursor + len(sep) if offsets else 0
+        cursor = offset
+        offsets.append({
+            "page": page_num,
+            "start": cursor,
+            "end": cursor + len(text),
+        })
+        cursor += len(text)
+    return offsets
+
+
+def map_chunks_to_pages(
+    chunks: list[str],
+    full_text: str,
+    page_offsets: list[dict],
+) -> list[dict]:
+    """将切分后的文本块映射回其所在的页面范围。
+
+    对每个 chunk 在全文中的字符位置查找，确定其落在哪些页面上。
+
+    Args:
+        chunks: 切片后的文本块列表
+        full_text: 拼接后的全文
+        page_offsets: compute_page_offsets 的返回结果
+
+    Returns:
+        [{"page_start": int, "page_end": int}, ...]
+        每个元素对应一个 chunk，page_start 和 page_end 均从 1 开始
+    """
+    results: list[dict] = []
+    offset_map = sorted(page_offsets, key=lambda x: x["start"])
+
+    for chunk in chunks:
+        pos = full_text.find(chunk)
+        if pos == -1:
+            # 回退：chunk 可能在全文中有微小差异，从开头找
+            pos = max(0, full_text.find(chunk[:min(50, len(chunk))]))
+        chunk_end = pos + len(chunk)
+
+        page_start = 1
+        page_end = 1
+        for off in offset_map:
+            if off["start"] <= pos < off["end"] + 2:
+                page_start = off["page"]
+                break
+        for off in reversed(offset_map):
+            if off["start"] < chunk_end:
+                page_end = off["page"]
+                break
+
+        results.append({
+            "page_start": page_start,
+            "page_end": page_end,
+        })
+    return results
+
+
+def load_and_chunk_pdf(
+    file_path: str | Path,
+    chunk_fn,
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
+    base_metadata: dict | None = None,
+) -> tuple[list[str], list[dict]]:
+    """加载 PDF 并进行带页码信息的切片，一次性完成全流程。
+
+    相比分别调用 load_pdf + chunk：
+    - 使用 load_pdf_page_by_page 保留页面边界
+    - 每个 chunk metadata 自动注入 page_start / page_end
+
+    Args:
+        file_path: PDF 文件路径
+        chunk_fn: 切片函数，需接受 (text, chunk_size, chunk_overlap, base_metadata)
+        chunk_size: 每块最大字符数
+        chunk_overlap: 相邻块重叠字符数
+        base_metadata: 文档基础元数据
+
+    Returns:
+        (chunks, metadatas) — metadatas 已含 page_start / page_end
+    """
+    pages = load_pdf_page_by_page(file_path)
+    if not pages:
+        return [], []
+
+    offsets = compute_page_offsets(pages)
+    full_text = "\n\n".join(text for _, text in pages)
+
+    chunks, metadatas = chunk_fn(full_text, chunk_size, chunk_overlap, base_metadata)
+    if not chunks:
+        return [], []
+
+    page_maps = map_chunks_to_pages(chunks, full_text, offsets)
+
+    for meta, pmap in zip(metadatas, page_maps):
+        meta["page_start"] = pmap["page_start"]
+        meta["page_end"] = pmap["page_end"]
+
+    return chunks, metadatas
 
 
 def _extract_page_text(page: fitz.Page) -> str:

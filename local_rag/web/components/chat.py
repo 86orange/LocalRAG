@@ -12,9 +12,10 @@ from pathlib import Path
 
 import streamlit as st
 
-from local_rag.config import TOP_K, DATA_DIR
+from local_rag.config import TOP_K, SIMILARITY_THRESHOLD, DATA_DIR
 from local_rag.qa.chain import generate_answer_stream
 from local_rag.vector_store.chroma_store import ChromaStore
+from local_rag.retrieval import HybridRetriever
 from local_rag.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -282,7 +283,8 @@ def _handle_question(question: str, top_k: int) -> None:
     msgs.append({"role": "user", "content": question})
 
     store = ChromaStore()
-    results = store.search(question, top_k=top_k)
+    hybrid = HybridRetriever(store)
+    results = hybrid.search(question, top_k=top_k, similarity_threshold=SIMILARITY_THRESHOLD)
 
     if not results:
         msgs.append({

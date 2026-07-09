@@ -200,9 +200,12 @@ def _generate_via_generate(
 
 
 def _trim_context(context: str) -> str:
-    """按最大 token 数估算裁剪上下文。
+    """按最大 token 数智能裁剪上下文。
 
-    粗略估算：1 中文字符 ≈ 1.5 tokens，保留一定余量给 system prompt 和 answer。
+    策略：
+    1. 将上下文按 "---" 分隔恢复为独立片段
+    2. 按片段在原文中的顺序保留（前面分数高、更相关）
+    3. 累计长度不超过 max_chars 时截断，优先保留完整片段
 
     Returns:
         裁剪后的上下文文本
@@ -211,5 +214,26 @@ def _trim_context(context: str) -> str:
     if len(context) <= max_chars:
         return context
 
-    logger.debug("上下文过长 (%d 字符)，裁剪至 %d 字符", len(context), max_chars)
-    return context[:max_chars]
+    parts = context.split("\n\n---\n\n")
+    if len(parts) <= 1:
+        return context[:max_chars]
+
+    kept: list[str] = []
+    used_chars = 0
+    sep_len = len("\n\n---\n\n")
+
+    for part in parts:
+        part_len = len(part)
+        added = sep_len + part_len if kept else part_len
+        if used_chars + added <= max_chars:
+            kept.append(part)
+            used_chars += added
+        else:
+            # 剩余空间不够完整片段，尝试截断该片段填入
+            remaining = max_chars - used_chars - (sep_len if kept else 0)
+            if remaining > 100 and part:
+                kept.append(part[:remaining])
+            break
+
+    logger.debug("上下文压缩: %d 个片段 → %d 个 (%d 字符)", len(parts), len(kept), len(context))
+    return "\n\n---\n\n".join(kept) if kept else context[:max_chars]

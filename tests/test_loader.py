@@ -191,3 +191,93 @@ def test_docx_no_ooxml_tags():
     assert "<w:body" not in text
     assert "<w:p" not in text
     assert "</w:" not in text
+
+
+# ==================== 元数据提取测试 ====================
+
+from local_rag.utils.file_utils import get_file_metadata
+
+
+def test_get_file_metadata_keys():
+    """get_file_metadata 应返回全部字段。"""
+    files = scan_documents()
+    if not files:
+        pytest.skip("documents/ 中无文件")
+    meta = get_file_metadata(files[0])
+    expected_keys = {"doc_id", "source", "file_name", "file_type", "file_size", "updated_at", "status", "business_line"}
+    assert set(meta.keys()) == expected_keys
+
+
+def test_get_file_metadata_doc_id_valid():
+    """doc_id 应为 32 位十六进制字符串。"""
+    files = scan_documents()
+    if not files:
+        pytest.skip("documents/ 中无文件")
+    meta = get_file_metadata(files[0])
+    assert len(meta["doc_id"]) == 32
+    assert all(c in "0123456789abcdef" for c in meta["doc_id"])
+
+
+def test_get_file_metadata_defaults():
+    """默认状态应为 active，业务线为空。"""
+    files = scan_documents()
+    if not files:
+        pytest.skip("documents/ 中无文件")
+    meta = get_file_metadata(files[0])
+    assert meta["status"] == "active"
+    assert meta["business_line"] == ""
+
+
+def test_get_file_metadata_custom():
+    """自定义 business_line 和 status 应生效。"""
+    files = scan_documents()
+    if not files:
+        pytest.skip("documents/ 中无文件")
+    meta = get_file_metadata(files[0], business_line="研发部", status="draft")
+    assert meta["business_line"] == "研发部"
+    assert meta["status"] == "draft"
+
+
+# ==================== 带 metadata 切片测试 ====================
+
+from local_rag.chunker import chunk_by_size_with_metadata, chunk_by_semantic_with_metadata
+
+SAMPLE_TEXT = "第一章\n\n这是第一章的内容，用于测试切片功能。\n\n第二章\n\n这是第二章的内容。"
+
+
+def test_chunk_by_size_with_metadata_returns_tuple():
+    """应返回 (chunks, metadatas) 二元组。"""
+    chunks, metas = chunk_by_size_with_metadata(SAMPLE_TEXT, base_metadata={"doc_id": "abc"})
+    assert isinstance(chunks, list)
+    assert isinstance(metas, list)
+    assert len(chunks) == len(metas)
+
+
+def test_chunk_by_size_with_metadata_fields():
+    """每块 metadata 应包含 base_metadata 的所有字段 + chunk_index + total_chunks。"""
+    base = {"doc_id": "abc123", "source": "/tmp/test.txt"}
+    chunks, metas = chunk_by_size_with_metadata(SAMPLE_TEXT, base_metadata=base)
+    for i, meta in enumerate(metas):
+        assert meta["doc_id"] == "abc123"
+        assert meta["source"] == "/tmp/test.txt"
+        assert meta["chunk_index"] == i
+        assert meta["total_chunks"] == len(chunks)
+
+
+def test_chunk_by_size_with_metadata_empty():
+    """空文本应返回空列表。"""
+    chunks, metas = chunk_by_size_with_metadata("")
+    assert chunks == []
+    assert metas == []
+
+
+def test_chunk_by_semantic_with_metadata():
+    """语义切片 metadata 也应包含 chunk_index + total_chunks。"""
+    text = "# 标题\n\n内容段落。\n\n## 子标题\n\n更多内容。"
+    base = {"doc_id": "xyz"}
+    chunks, metas = chunk_by_semantic_with_metadata(text, chunk_size=512, chunk_overlap=64, base_metadata=base)
+    assert len(chunks) > 0
+    for i, meta in enumerate(metas):
+        assert meta["doc_id"] == "xyz"
+        assert meta["chunk_index"] == i
+        assert meta["total_chunks"] == len(chunks)

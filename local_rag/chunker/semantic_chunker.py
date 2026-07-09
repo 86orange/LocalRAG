@@ -70,7 +70,7 @@ def chunk_by_semantic(
 
     # 按标题边界合并语义段为语义组
     groups = _group_by_semantic(segments, chunk_size)
-    chunks = _build_semantic_chunks(groups, chunk_size, chunk_overlap)
+    chunks, _chapters = _build_semantic_chunks(groups, chunk_size, chunk_overlap)
 
     logger.debug(
         "语义切片完成: %d 字符 → %d 组 → %d 块 (chunk_size=%d, overlap=%d)",
@@ -124,6 +124,25 @@ def _group_by_semantic(segments: list[str], chunk_size: int) -> list[str]:
             )
 
     return groups
+
+
+def _extract_chapter(group: str) -> str:
+    """从语义组中提取章节标题。
+
+    若语义组以 Markdown 标题行开头，返回该标题文本（去除 # 前缀）。
+    否则返回空字符串。
+
+    Args:
+        group: 语义组文本
+
+    Returns:
+        章节标题，无标题时返回 ""
+    """
+    first_line = group.split("\n", 1)[0].strip()
+    m = _HEADING_RE.match(first_line)
+    if m:
+        return first_line[m.end():].strip()
+    return ""
 
 
 def _force_split_large_groups(groups: list[str], max_size: int) -> list[str]:
@@ -200,34 +219,46 @@ def _build_semantic_chunks(
     groups: list[str],
     chunk_size: int,
     chunk_overlap: int,
-) -> list[str]:
-    """将语义组合并成最终文本块。
+) -> tuple[list[str], list[str]]:
+    """将语义组合并成最终文本块，同时返回每块对应的章节标题。
 
     每组间以 "\n\n" 分隔。当前累计长度接近 chunk_size 时创建新块，
     新块回退 chunk_overlap 个语义组作为上下文延续。
+
+    Returns:
+        (chunks, chapters) — chapters[i] 是 chunks[i] 所属章节标题，
+        无标题时为空字符串
     """
     chunks: list[str] = []
+    chapters: list[str] = []
     current: list[str] = []
+    current_chapter = ""
     current_len = 0
 
     for group in groups:
+        chapter = _extract_chapter(group)
         group_len = len(group)
         separator_len = 2 if current else 0
 
         if current_len + separator_len + group_len <= chunk_size:
+            if not current_chapter:
+                current_chapter = chapter
             current.append(group)
             current_len += separator_len + group_len
         else:
             chunks.append("\n\n".join(current))
+            chapters.append(current_chapter)
 
             current, current_len = _rebuild_prefix(current, chunk_overlap)
+            current_chapter = chapter
             current.append(group)
             current_len += (2 if current else 0) + group_len
 
     if current:
         chunks.append("\n\n".join(current))
+        chapters.append(current_chapter)
 
-    return chunks
+    return chunks, chapters
 
 
 def _rebuild_prefix(
@@ -255,3 +286,62 @@ def _rebuild_prefix(
         prefix_len += additional
 
     return prefix, prefix_len
+
+
+def chunk_by_semantic_with_metadata(
+    text: str,
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
+    base_metadata: dict | None = None,
+) -> tuple[list[str], list[dict]]:
+    """语义切片并返回每块的 metadata，含 chunk_index / total_chunks / chapter 及基础元数据。
+
+    Args:
+        text: 输入文本
+        chunk_size: 每块最大字符数
+        chunk_overlap: 相邻块重叠字符数
+        base_metadata: 文档基础元数据，会复制到每块的 metadata 中
+
+    Returns:
+        (chunk_texts, chunk_metadatas) 二元组
+    """
+    chunk_size = chunk_size if chunk_size is not None else CHUNK_SIZE
+    chunk_overlap = chunk_overlap if chunk_overlap is not None else CHUNK_OVERLAP
+
+    if not text or not text.strip():
+        return [], []
+
+    if chunk_size <= 0:
+        raise ValueError(f"chunk_size 必须为正数，当前值: {chunk_size}")
+    if chunk_overlap >= chunk_size:
+        raise ValueError(
+            f"chunk_overlap ({chunk_overlap}) 必须小于 chunk_size ({chunk_size})"
+        )
+
+    segments = [
+        s.strip()
+        for s in _PARAGRAPH_SPLIT_RE.split(text)
+        if s.strip() and not _HORIZONTAL_RULE_RE.match(s.strip())
+    ]
+
+    total_len = sum(len(s) for s in segments)
+    if total_len <= chunk_size:
+        short_text = "\n\n".join(segments).strip()
+        chapter = _extract_chapter(short_text)
+        base = base_metadata or {}
+        return [short_text], [{**base, "chunk_index": 0, "total_chunks": 1, "chapter": chapter}]
+
+    groups = _group_by_semantic(segments, chunk_size)
+    chunks, chapters = _build_semantic_chunks(groups, chunk_size, chunk_overlap)
+
+    base = base_metadata or {}
+    metadatas: list[dict] = []
+    total = len(chunks)
+    for i in range(total):
+        metadatas.append({
+            **base,
+            "chunk_index": i,
+            "total_chunks": total,
+            "chapter": chapters[i] if i < len(chapters) else "",
+        })
+    return chunks, metadatas

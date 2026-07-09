@@ -215,3 +215,29 @@ def _build_overlap_prefix(
         prefix_len += additional
 
     return prefix, prefix_len
+
+
+def chunk_by_size_with_metadata(
+    text: str,
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
+    base_metadata: dict | None = None,
+) -> tuple[list[str], list[dict]]:
+    """切片并返回每块的 metadata，含 chunk_index / total_chunks 及基础元数据。
+
+    Args:
+        text: 输入文本
+        chunk_size: 每块最大字符数
+        chunk_overlap: 相邻块重叠字符数
+        base_metadata: 文档基础元数据，会复制到每块的 metadata 中
+
+    Returns:
+        (chunk_texts, chunk_metadatas) 二元组
+    """
+    chunks = chunk_by_size(text, chunk_size, chunk_overlap)
+    base = base_metadata or {}
+    metadatas: list[dict] = []
+    total = len(chunks)
+    for i in range(total):
+        metadatas.append({**base, "chunk_index": i, "total_chunks": total})
+    return chunks, metadatas

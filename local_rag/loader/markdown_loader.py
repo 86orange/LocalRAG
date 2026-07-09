@@ -7,13 +7,14 @@ Markdown 文档加载器
 3. 图片 / 链接语法清洗（保留文字描述）
 4. 代码块保留原格式
 5. 表格保留为 pipe 格式
-6. 多余空行合并
+6. 统一清洗管线（空白压缩、OCR 纠错等）
 """
 
 import re
 from pathlib import Path
 
 from local_rag.utils.logger import get_logger
+from local_rag.cleaner import clean_without_ocr
 
 logger = get_logger(__name__)
 
@@ -32,8 +33,6 @@ _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 # 粗体/斜体: **text**, __text__, *text*, _text_, ~~text~~
 _BOLD_ITALIC_RE = re.compile(r"(\*{1,3}|_{1,3}|~~)(.+?)\1")
-# 多行空行 → 单空行
-_MULTI_NEWLINE_RE = re.compile(r"\n{3,}")
 
 
 def load_markdown(file_path: str | Path) -> str:
@@ -100,8 +99,8 @@ def _clean_markdown(text: str) -> str:
 
     text = "\n".join(cleaned)
 
-    # 8. 合并多行空行为单空行
-    text = _MULTI_NEWLINE_RE.sub("\n\n", text)
+    # 通过统一清洗管线
+    text = clean_without_ocr(text)
 
-    # 9. 去除首尾空白
-    return text.strip()
+    logger.info("Markdown 加载完成: %s (%d 字符)", file_path.name, len(text))
+    return text

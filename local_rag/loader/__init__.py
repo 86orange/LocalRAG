@@ -7,7 +7,7 @@
 
 from local_rag.loader.markdown_loader import load_markdown
 from local_rag.loader.txt_loader import load_txt
-from local_rag.loader.pdf_loader import load_pdf
+from local_rag.loader.pdf_loader import load_pdf, load_pdf_page_by_page, compute_page_offsets, map_chunks_to_pages, load_and_chunk_pdf
 from local_rag.loader.docx_loader import load_docx
 
 # 文件类型 → loader 映射表，供 CLI / Web / 测试统一使用

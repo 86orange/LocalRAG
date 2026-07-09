@@ -6,18 +6,15 @@ Word 文档加载器
 2. 表格内容提取（转 Markdown pipe 格式）
 3. 页眉页脚移除
 4. 文本框 / 艺术字内容提取
-5. 空行压缩与文本规范化
+5. 统一清洗管线
 """
 
-import re
 from pathlib import Path
 
 from local_rag.utils.logger import get_logger
+from local_rag.cleaner import clean_without_ocr
 
 logger = get_logger(__name__)
-
-# 3 个及以上连续空行 → 双空行
-_MULTI_NEWLINE_RE = re.compile(r"\n{3,}")
 
 
 def load_docx(file_path: str | Path) -> str:
@@ -74,10 +71,9 @@ def load_docx(file_path: str | Path) -> str:
         if footer_text:
             logger.debug("DOCX 页脚: %s", footer_text[:80])
 
-    # 拼接并清洗
+    # 拼接并通过统一清洗管线
     text = "\n".join(parts)
-    text = _MULTI_NEWLINE_RE.sub("\n\n", text)
-    text = text.strip()
+    text = clean_without_ocr(text)
 
     logger.info("DOCX 加载完成: %s (%d 段落, %d 表格, %d 字符)",
                 file_path.name,

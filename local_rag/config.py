@@ -37,6 +37,9 @@ CHUNK_OVERLAP = int(os.getenv("LOCAL_RAG_CHUNK_OVERLAP", "128"))
 # 检索返回的最相关文档片段数
 TOP_K = int(os.getenv("LOCAL_RAG_TOP_K", "5"))
 
+# 检索结果相似度阈值（低于此分数的结果会被过滤）
+SIMILARITY_THRESHOLD = float(os.getenv("LOCAL_RAG_SIMILARITY_THRESHOLD", "0.35"))
+
 # 输入 LLM 的最大上下文 token 数
 MAX_CONTEXT_TOKENS = int(os.getenv("LOCAL_RAG_MAX_CONTEXT_TOKENS", "4096"))
 

@@ -60,6 +60,72 @@ class ChromaStore:
 
     # ==================== 公共接口 ====================
 
+    def get_all_chunks(self) -> list[str]:
+        """获取向量库中所有文档的文本内容。
+
+        用于构建 BM25 关键词索引。
+
+        Returns:
+            所有文档文本列表（顺序与 ChromaDB 内部 ID 顺序一致）
+        """
+        self._ensure_collection()
+        try:
+            all_data = self._collection.get()
+            docs = all_data.get("documents", [])
+            return docs if docs else []
+        except Exception as e:
+            logger.warning("获取全量文档失败: %s", e)
+            return []
+
+    def get_chunk_metadata(self, index: int) -> dict | None:
+        """按索引获取指定文档的 metadata。
+
+        Args:
+            index: 文档在 get_all_chunks() 返回列表中的位置
+
+        Returns:
+            metadata 字典，不存在返回 None
+        """
+        self._ensure_collection()
+        try:
+            all_data = self._collection.get()
+            metas = all_data.get("metadatas", [])
+            if 0 <= index < len(metas):
+                return metas[index]
+            return None
+        except Exception as e:
+            logger.warning("获取 chunk metadata 失败 (index=%d): %s", index, e)
+            return None
+
+    def map_results_to_indices(
+        self,
+        results: list[dict[str, Any]],
+        bm25_retriever,
+    ) -> list[tuple[int, float]]:
+        """将 ChromaDB 检索结果映射到 BM25 全局文档索引。
+
+        通过文档内容在 BM25 的 chunks 列表中定位对应位置。
+
+        Args:
+            results: ChromaStore.search 返回的结果列表
+            bm25_retriever: BM25Retriever 实例
+
+        Returns:
+            [(doc_index, score), ...]
+        """
+        mapped: list[tuple[int, float]] = []
+        bm25_docs = [bm25_retriever.get_document(i) for i in range(bm25_retriever.doc_count)]
+
+        for result in results:
+            doc = result.get("document", "")
+            score = result.get("score", 0.0)
+            try:
+                idx = bm25_docs.index(doc)
+                mapped.append((idx, score))
+            except ValueError:
+                mapped.append((-1, score))
+        return mapped
+
     def add_documents(
         self,
         chunks: list[str],
@@ -135,6 +201,55 @@ class ChromaStore:
 
         return self._format_results(raw)
 
+    def search_similar(
+        self,
+        query: str,
+        top_k: int = 1,
+        similarity_threshold: float = 0.95,
+    ) -> list[dict[str, Any]]:
+        """检索与查询文本高度相似的已有片段，用于内容去重。
+
+        与 search 方法使用同一底层查询，但增加了相似度过滤：
+        仅返回 cosine similarity >= threshold 的结果。
+
+        Args:
+            query: 查询文本
+            top_k: 最大返回数
+            similarity_threshold: 相似度阈值，0~1
+
+        Returns:
+            过滤后的结果列表（可能为空）
+        """
+        raw = self.search(query, top_k=top_k)
+        return [
+            r for r in raw
+            if r.get("score", 0) >= similarity_threshold
+        ]
+
+    def doc_exists(self, doc_id: str) -> bool:
+        """检查指定 doc_id 的文档是否已存在于向量库中。
+
+        用于文件级去重：同一内容 MD5 的文件无需重复索引。
+
+        Args:
+            doc_id: 文档内容哈希（即 metadata 中的 doc_id 字段）
+
+        Returns:
+            True 表示已存在，False 表示可以安全入���
+        """
+        self._ensure_collection()
+
+        try:
+            results = self._collection.get(
+                where={"doc_id": doc_id},
+                limit=1,
+            )
+            ids = results.get("ids", [])
+            return len(ids) > 0
+        except Exception as e:
+            logger.warning("doc_exists 查询失败 (doc_id=%s): %s", doc_id, e)
+            return False
+
     def delete_by_source(self, source: str) -> int:
         """删除指定来源文件的所有文档片段。
 
@@ -160,6 +275,91 @@ class ChromaStore:
         except Exception as e:
             logger.error("删除失败 (来源: %s): %s", source, e)
             return 0
+
+    def archive_source(self, source: str) -> int:
+        """归档指定来源文件的所有片段（标记 is_active=False）。
+
+        用于版本管理：旧版本数据保留但检索时过滤掉。
+
+        Args:
+            source: 文件路径标识
+
+        Returns:
+            归档的文档数量
+        """
+        self._ensure_collection()
+
+        try:
+            results = self._collection.get(
+                where={"source": source},
+            )
+            ids_to_update = results.get("ids", [])
+            if ids_to_update:
+                # ChromaDB v1 的 update 接口：逐条更新 metadata
+                for chunk_id in ids_to_update:
+                    self._collection.update(
+                        ids=[chunk_id],
+                        metadatas=[{"is_active": False}],
+                    )
+                logger.info("已归档 %d 个片段 (来源: %s)", len(ids_to_update), source)
+            return len(ids_to_update)
+        except Exception as e:
+            logger.error("归档失败 (来源: %s): %s", source, e)
+            return 0
+
+    def activate_all(self, source: str) -> int:
+        """重新激活指定来源的所有归档片段（is_active=True）。
+
+        用于版本回滚：将指定版本的 chunks 重新标记为活跃。
+
+        Args:
+            source: 文件路径标识
+
+        Returns:
+            激活的文档数量
+        """
+        self._ensure_collection()
+
+        try:
+            results = self._collection.get(
+                where={"source": source},
+            )
+            ids_to_update = results.get("ids", [])
+            if ids_to_update:
+                for chunk_id in ids_to_update:
+                    self._collection.update(
+                        ids=[chunk_id],
+                        metadatas=[{"is_active": True}],
+                    )
+                logger.info("已激活 %d 个片段 (来源: %s)", len(ids_to_update), source)
+            return len(ids_to_update)
+        except Exception as e:
+            logger.error("激活失败 (来源: %s): %s", source, e)
+            return 0
+
+    def get_source_versions(self, source: str) -> list[str]:
+        """获取指定来源文件的所有版本号。
+
+        Args:
+            source: 文件路径标识
+
+        Returns:
+            去重后的版本号列表
+        """
+        self._ensure_collection()
+        try:
+            results = self._collection.get(
+                where={"source": source},
+            )
+            metas = results.get("metadatas", [])
+            versions: set[str] = set()
+            for meta in metas:
+                if meta and "version" in meta:
+                    versions.add(str(meta["version"]))
+            return sorted(versions, key=lambda v: int(v))
+        except Exception as e:
+            logger.warning("获取版本列表失败 (来源: %s): %s", source, e)
+            return []
 
     def delete_all(self) -> int:
         """清空整个向量库。
