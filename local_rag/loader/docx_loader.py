@@ -13,6 +13,7 @@ from pathlib import Path
 
 from local_rag.utils.logger import get_logger
 from local_rag.cleaner import clean_without_ocr
+import re
 
 logger = get_logger(__name__)
 
